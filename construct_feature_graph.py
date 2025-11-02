@@ -43,7 +43,7 @@ def construct_feature_graph(X, y, gene_list, theta, alpha=1, beta=0, mi_bins=10,
     ppi_matrix = build_string_ppi_adjacency(gene_list, score_threshold=None)
     
     # # --- 矩阵融合与过滤 ---    
-    mix_matrix = 0 * gene_pathways_matrix + 0.5 * ppi_matrix
+    mix_matrix = 0.25 * gene_pathways_matrix + 0.25 * ppi_matrix
     combined_matrix =  0.5 * pearson_norm  +  mix_matrix
 
     # 将前面融合得到 combined_matrix（可能是 DataFrame）转成 numpy 数组
