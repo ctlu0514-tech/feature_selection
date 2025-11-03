@@ -75,49 +75,69 @@ if __name__ == "__main__":
 
     # --- 实验参数 ---
     PRE_FILTER_TOP_N = 4000
-    THETA = 0.8
+    THETA = 0.6
+    W_BIO_BOOST = 0.5 
     RESULTS_DIR = "enrichment_inputs_Lung"
-    
+    GA_POPULATION_SIZE = 100
+
+    GA_OMEGA = 0.0125
+    SELECTION_RATIO=0.5
+
     # 1. 加载数据
-    X, y, gene_list = load_and_preprocess_data(file_name='Prostate_GSE11682_byGene.csv', label_line_name='type')
+    X, y, gene_list = load_and_preprocess_data(file_name='Lung_GSE19804_byGene.csv', label_line_name='type')
 
     if X is None:
         print("数据加载失败，程序终止。")
     else:
-        # --- 公共步骤 (预筛选、建图、社团检测) ---
-        print("\n--- 执行公共步骤：预筛选、建图、社团检测 ---")
-        fisher_scores = compute_fisher_score(X, y)
-        top_indices = np.argsort(fisher_scores)[-PRE_FILTER_TOP_N:]
-        X_subset = X[:, top_indices]
-        
-        feature_graph = construct_feature_graph(X_subset, y, [gene_list[i] for i in top_indices], THETA)
-        
-        partition = iscd_algorithm_auto_k(feature_graph)
-        clusters_dict = defaultdict(list)
-        for node, community in partition.items():
-            clusters_dict[community].append(node)
-        clusters = [cluster for cluster in clusters_dict.values()]
-        print(f"公共步骤完成，检测到 {len(clusters)} 个社团。")
-        
-        # --- 方案一：原CDGAFS (遗传算法) ---
+        # --- 方案一：GA (基于 Pearson 图) ---
+        # (调用 CDGAFS 来执行预筛选、构建 Pearson 图、运行 GA，并返回物料)
         print("\n" + "="*50)
-        print("方案一: 原CDGAFS (遗传算法)")
+        print("方案一: 运行 GA (基于 Pearson 图) 并准备物料")
         print("="*50)
-        selected_indices_ga = cdgafs_feature_selection(
-            X, y, gene_list, THETA, omega=0.0025, population_size=100, pre_filter_top_n=PRE_FILTER_TOP_N
+        
+        (selected_indices_ga, 
+         X_subset, 
+         top_indices, 
+         gene_list_subset, 
+         _) = cdgafs_feature_selection(
+            X, y, gene_list, 
+            theta=THETA, 
+            omega=GA_OMEGA, 
+            population_size=GA_POPULATION_SIZE,
+            w_bio_boost=W_BIO_BOOST,
+            pre_filter_top_n=PRE_FILTER_TOP_N,
+            graph_type='pearson_only'  # <-- 明确要求方案一使用 Pearson 图
         )
-        save_gene_list(selected_indices_ga, gene_list, RESULTS_DIR, "ga_selected_genes.txt")
+        
+        print(f"GA (Pearson图) 最终选出 {len(selected_indices_ga)} 个特征。")
+        save_gene_list(selected_indices_ga, gene_list, RESULTS_DIR, "ga_pearson_selected_genes.txt")
         
         # # --- 方案二：新方法 (中心性 + LASSO) ---
         print("\n" + "="*50)
-        print("方案二: 新方法 (中心性排序 + LASSO精选)")
+        print("方案二: 新方法 (中心性排序 + LASSO精选，基于 Fused 图)")
         print("="*50)
         
-        # --- 步骤 2.1: 中心性排序 ---
-        print("--- 步骤 2.1: 中心性排序初筛 ---")
-        selected_indices_centrality = select_features_by_centrality(
-            feature_graph, clusters, top_indices, selection_ratio=0.3
+        print("方案二: 步骤 2.1 (Centrality) - 构建 Fused Graph (乘法融合)...")
+        # (使用返回的物料)
+        graph_centrality = construct_feature_graph(
+            X_subset, y, gene_list_subset, THETA, w_bio_boost=W_BIO_BOOST
         )
+        
+        print("方案二: 步骤 2.2 (Centrality) - 在 Fused 图上进行社团检测...")
+        # 根据融合图检测社区
+        partition_centrality = iscd_algorithm_auto_k(graph_centrality)
+        clusters_centrality_dict = defaultdict(list)
+        for node, community in partition_centrality.items():
+            clusters_centrality_dict[community].append(node)
+        clusters_centrality = [cluster for cluster in clusters_centrality_dict.values()]
+        print(f"Centrality 方案检测到 {len(clusters_centrality)} 个社团。")
+
+        print("方案二: 步骤 2.3 (Centrality) - 中心性排序初筛...")
+        # (使用返回的 top_indices 进行映射)
+        selected_indices_centrality = select_features_by_centrality(
+            graph_centrality, clusters_centrality, top_indices, selection_ratio=SELECTION_RATIO
+        )
+
         num_centrality_features = len(selected_indices_centrality)
         print(f"中心性排序从 {PRE_FILTER_TOP_N} 个特征中初筛出 {num_centrality_features} 个候选特征。")
         save_gene_list(selected_indices_centrality, gene_list, RESULTS_DIR, "centrality_selected_genes.txt")
@@ -151,14 +171,14 @@ if __name__ == "__main__":
         evaluate_with_repeats(X, y, selected_indices_ga, "CDGAFS (GA)")
 
         print("\n【方案二: 新方法 (分步评估)】")
-        print(f"  - 步骤 2.1 (中心性排序后):")
-        print(f"    - 特征数量: {num_centrality_features}")
-        print(f"    - 分类性能:")
-        # 再次打印一次结果，方便集中对比
-        for clf, metrics in results_centrality.items():
-            print(f"      - {clf}: Acc={metrics['Accuracy']:.4f}")
+        # print(f"  - 步骤 2.1 (中心性排序后):")
+        # print(f"    - 特征数量: {num_centrality_features}")
+        # print(f"    - 分类性能:")
+        # # 再次打印一次结果，方便集中对比
+        # for clf, metrics in results_centrality.items():
+        #     print(f"      - {clf}: Acc={metrics['Accuracy']:.4f}")
 
-        print(f"\n  - 步骤 2.2 (LASSO精选后):")
+        print("\n【方案二: 中心性+LASSO后】")
         print(f"    - 特征数量: {num_lasso_features}")
         print(f"    - 分类性能:")
         # 再次打印一次结果，方便集中对比
